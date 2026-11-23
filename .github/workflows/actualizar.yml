@@ -14,55 +14,70 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Descargar repositorio
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Descargar y validar FQDNs maliciosos
         run: |
-          curl -sS --fail --retry 3 --retry-delay 5 --max-time 30 --max-filesize 15728640 \
-            https://urlhaus.abuse.ch/downloads/hostfile/ > temp_hosts.txt
+          curl -sS -L --fail -A "Mozilla/5.0 (compatible; ThreatFeedBot/1.0)" \
+            --retry 3 --retry-delay 5 --max-time 30 --max-filesize 15728640 \
+            https://urlhaus.abuse.ch/downloads/text_online/ > temp_urls.txt
 
           python3 - << 'EOF'
+          import ipaddress
           import re
           import sys
+          from urllib.parse import urlsplit
 
-          # Regex estricta para FQDN válido (RFC 1123): solo letras, números, guiones y puntos; sin rutas ni puertos
+          # Regex estricta para FQDN válido (RFC 1123)
           FQDN_REGEX = re.compile(
               r"^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*\.[a-z]{2,24}$"
           )
 
-          # Dominios de infraestructura crítica que jamás deben bloquearse
+          # Dominios legítimos/nube que jamás deben bloquearse aunque alojen enlaces abusivos
           DOMINIOS_PROTEGIDOS = (
               "fortinet.com", "fortiguard.net", "github.com", "githubusercontent.com",
-              "microsoft.com", "windowsupdate.com", "office.com", "google.com",
-              "googleapis.com", "gstatic.com", "apple.com", "icloud.com",
-              "amazon.com", "amazonaws.com", "cloudflare.com", "akamai.net"
+              "microsoft.com", "windowsupdate.com", "office.com", "live.com",
+              "google.com", "googleapis.com", "gstatic.com", "apple.com", "icloud.com",
+              "amazon.com", "amazonaws.com", "cloudflare.com", "akamai.net",
+              "dropbox.com", "discord.com", "discordapp.com"
           )
 
           dominios_validos = set()
 
-          with open("temp_hosts.txt", "r", encoding="utf-8", errors="ignore") as f:
+          with open("temp_urls.txt", "r", encoding="utf-8", errors="ignore") as f:
               for linea in f:
-                  # Eliminar comentarios y espacios
                   limpia = linea.strip().split("#")[0].strip().lower()
                   if not limpia:
                       continue
 
-                  # Extraer el dominio (soporta formato "127.0.0.1 dominio.com" o "dominio.com")
-                  partes = limpia.split()
-                  candidato = partes[1] if len(partes) >= 2 and partes[0] in ("127.0.0.1", "0.0.0.0") else partes[0]
+                  # Extraer el hostname si viene como URL (http://...) o tomar el texto directo
+                  if "://" in limpia:
+                      candidato = urlsplit(limpia).hostname or ""
+                  else:
+                      candidato = limpia.split("/")[0].split(":")[0]
 
-                  # Quitar punto final si existe y validar longitud máxima DNS (253 caracteres)
                   candidato = candidato.rstrip(".")
-                  if len(candidato) > 253 or not FQDN_REGEX.match(candidato):
+                  if not candidato or len(candidato) > 253:
                       continue
 
-                  # Evitar bloquear infraestructura crítica o sus subdominios
+                  # Descartar si es una dirección IP (las IPs van en sus propios feeds)
+                  try:
+                      ipaddress.ip_address(candidato)
+                      continue
+                  except ValueError:
+                      pass
+
+                  # Validar formato estricto de FQDN
+                  if not FQDN_REGEX.match(candidato):
+                      continue
+
+                  # Proteger infraestructura crítica y plataformas en la nube
                   if any(candidato == d or candidato.endswith("." + d) for d in DOMINIOS_PROTEGIDOS):
                       continue
 
                   dominios_validos.add(candidato)
 
-          # Umbral mínimo de seguridad: evita sobrescribir si la fuente vino vacía o rota
+          # Umbral mínimo de seguridad
           if len(dominios_validos) < 50:
               print(f"ERROR: Solo se encontraron {len(dominios_validos)} dominios. Se aborta para proteger la lista actual.")
               sys.exit(1)
@@ -74,7 +89,7 @@ jobs:
 
           print(f"Éxito: {len(lista_ordenada)} FQDNs maliciosos validados y guardados.")
           EOF
-          rm -f temp_hosts.txt
+          rm -f temp_urls.txt
 
       - name: Guardar cambios
         run: |

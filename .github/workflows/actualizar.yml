@@ -1,4 +1,4 @@
-name: Actualizar FQDN Maliciosos (URLhaus)
+name: Actualizar FQDN Maliciosos (Threat Intel)
 
 on:
   schedule:
@@ -18,22 +18,26 @@ jobs:
 
       - name: Descargar y validar FQDNs maliciosos
         run: |
-          curl -sS -L --fail -A "Mozilla/5.0 (compatible; ThreatFeedBot/1.0)" \
+          HTTP_CODE=$(curl -sS -L -w "%{http_code}" -o temp_domains.txt \
             --retry 3 --retry-delay 5 --max-time 30 --max-filesize 15728640 \
-            https://urlhaus.abuse.ch/downloads/text_online/ > temp_urls.txt
+            https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/tif.mini.txt)
+
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "ERROR: La descarga falló con código HTTP $HTTP_CODE"
+            exit 1
+          fi
 
           python3 - << 'EOF'
           import ipaddress
           import re
           import sys
-          from urllib.parse import urlsplit
 
           # Regex estricta para FQDN válido (RFC 1123)
           FQDN_REGEX = re.compile(
               r"^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*\.[a-z]{2,24}$"
           )
 
-          # Dominios legítimos/nube que jamás deben bloquearse aunque alojen enlaces abusivos
+          # Dominios legítimos/nube que jamás deben bloquearse
           DOMINIOS_PROTEGIDOS = (
               "fortinet.com", "fortiguard.net", "github.com", "githubusercontent.com",
               "microsoft.com", "windowsupdate.com", "office.com", "live.com",
@@ -44,23 +48,13 @@ jobs:
 
           dominios_validos = set()
 
-          with open("temp_urls.txt", "r", encoding="utf-8", errors="ignore") as f:
+          with open("temp_domains.txt", "r", encoding="utf-8", errors="ignore") as f:
               for linea in f:
-                  limpia = linea.strip().split("#")[0].strip().lower()
-                  if not limpia:
-                      continue
-
-                  # Extraer el hostname si viene como URL (http://...) o tomar el texto directo
-                  if "://" in limpia:
-                      candidato = urlsplit(limpia).hostname or ""
-                  else:
-                      candidato = limpia.split("/")[0].split(":")[0]
-
-                  candidato = candidato.rstrip(".")
+                  candidato = linea.strip().split("#")[0].strip().lower().rstrip(".")
                   if not candidato or len(candidato) > 253:
                       continue
 
-                  # Descartar si es una dirección IP (las IPs van en sus propios feeds)
+                  # Descartar si es una dirección IP
                   try:
                       ipaddress.ip_address(candidato)
                       continue
@@ -89,11 +83,11 @@ jobs:
 
           print(f"Éxito: {len(lista_ordenada)} FQDNs maliciosos validados y guardados.")
           EOF
-          rm -f temp_urls.txt
+          rm -f temp_domains.txt
 
       - name: Guardar cambios
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add fqdn_maliciosos.txt
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Actualización FQDN URLhaus" && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Actualización FQDN Threat Intel" && git push)
